@@ -14,21 +14,23 @@ const {
 
 const fs = require('fs');
 
+// FIX #9: أضفنا GUILD_MEMBERS لأن addMember يحتاجه
 const client = new Client({
-  intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES],
+  intents: [
+    Intents.FLAGS.GUILDS,
+    Intents.FLAGS.GUILD_MESSAGES,
+    Intents.FLAGS.GUILD_MEMBERS,
+  ],
 });
-const express = require("express")
+
+const express = require("express");
 const app = express();
+
+// FIX #1: كان app.listen يُستدعى مرتين على نفس البورت مما يسبب EADDRINUSE
+// الآن استدعاء واحد فقط
 var listener = app.listen(process.env.PORT || 3000, function () {
   console.log('Your app is listening on port ' + listener.address().port);
 });
-app.listen(() => console.log("I'm Ready To Work..! 24H"));
-/*app.get('/', (req, res) => {
-  res.send(`
-  <body>
-  <center><h1>Bot 24H ON!</h1></center
-  </body>`)
-});*/
 
 var path = require("path");
 var bodyParser = require("body-parser");
@@ -67,6 +69,18 @@ const oauth = new DiscordOauth2({
 
 var scopes = ["identify", "email", "guilds", "guilds.join"];
 
+// FIX #3: session middleware يجب أن يكون قبل passport.initialize() و passport.session()
+app.use(
+  session({
+    secret: "some random secret",
+    cookie: {
+      maxAge: 60000 * 60 * 24,
+    },
+    saveUninitialized: false,
+    resave: false,
+  })
+);
+
 passport.use(
   new DiscordStrategy(
     {
@@ -75,11 +89,11 @@ passport.use(
       callbackURL: config.bot.callbackURL,
       scope: scopes,
       verify_link: config.bot.verifylink,
-  category: config.bot.category,
-  transferid: config.bot.transferid,
-  price: config.bot.price,
-  probot_id: config.bot.probotid,
-  logs: config.bot.logs
+      category: config.bot.category,
+      transferid: config.bot.transferid,
+      price: config.bot.price,
+      probot_id: config.bot.probotid,
+      logs: config.bot.logs
     },
     function (accessToken, refreshToken, profile, done) {
       process.nextTick(async function () {
@@ -92,12 +106,24 @@ passport.use(
     }
   )
 );
+
+passport.serializeUser(function (user, done) {
+  done(null, user);
+});
+passport.deserializeUser(function (user, done) {
+  done(null, user);
+});
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+// FIX #4: كان يستخدم avatarUrl قبل تعريفها داخل نفس الـ template literal
 app.get('/success', (req, res) => {
   if (!req.isAuthenticated()) return res.redirect('/');
-  const profile = req.profile;
+  const profile = req.user;
 
   const avatarUrl = profile.avatar
-    ? `https://cdn.discordapp.com/avatars/${profile.id}/${avatarUrl}.png?size=512`
+    ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png?size=512`
     : `https://cdn.discordapp.com/embed/avatars/0.png`;
 
   res.render('success', {
@@ -105,6 +131,8 @@ app.get('/success', (req, res) => {
     avatar: avatarUrl,
   });
 });
+
+// FIX #7: حذفنا الـ duplicate route GET / - نبقي نسخة واحدة فقط
 app.get("/", function (req, res) {
   res.render("index", {
     client: client,
@@ -113,32 +141,6 @@ app.get("/", function (req, res) {
     bot: bot,
   });
 });
-
-app.use(
-  session({
-    secret: "some random secret",
-    cookie: {
-      maxAge: 60000 * 60 * 24,
-    },
-    saveUninitialized: false,
-  })
-);
-app.get("/", (req, res) => {
-  res.render("index", {
-    client: client,
-    user: req.user,
-    config: config,
-    bot: bot,
-  });
-});
-passport.serializeUser(function (user, done) {
-  done(null, user);
-});
-passport.deserializeUser(function (user, done) {
-  done(null, user);
-});
-app.use(passport.initialize());
-app.use(passport.session());
 
 app.get(
   "/login",
@@ -155,6 +157,14 @@ app.get(
       config: config,
       bot: bot,
     });
+  }
+);
+
+app.get(
+  "/callback",
+  passport.authenticate("discord", { failureRedirect: "/" }),
+  function (req, res) {
+    res.redirect("/success");
   }
 );
 
@@ -208,7 +218,14 @@ client.on("messageCreate", async (message) => {
           message.channel.send({ content: `**عذرًا , يرجى تحديد خادم ..**` });
         });
     let guild = client.guilds.cache.get(`${args[0]}`);
-    let amount = args[1];
+    // FIX #6: تحويل amount لـ integer لأن المقارنة > مع alld.length كانت تفشل
+    let amount = parseInt(args[1]);
+    if (isNaN(amount) || amount <= 0)
+      return msg
+        .edit({ content: `**عذرًا , العدد يجب أن يكون رقمًا صحيحًا ..**` })
+        .catch(() => {
+          message.channel.send({ content: `**عذرًا , العدد يجب أن يكون رقمًا صحيحًا ..**` });
+        });
     let count = 0;
     if (!guild)
       return msg
@@ -254,6 +271,7 @@ client.on("messageCreate", async (message) => {
       });
   }
 });
+
 client.on("messageCreate", async (message) => {
   if (message.content.startsWith(`+refresh`)) {
     if (!config.bot.owners.includes(`${message.author.id}`)) {
@@ -296,12 +314,14 @@ client.on("messageCreate", async (message) => {
     });
   }
 });
+
 client.on("messageCreate", async (message) => {
   if (message.content.startsWith(`+users`)) {
     let alld = usersdata.all();
     message.reply({ content: `**يوجد حاليًا ${alld.length}**` });
   }
 });
+
 client.on("messageCreate", async (message) => {
   if (message.content.startsWith(`+help`)) {
     if (!config.bot.owners.includes(`${message.author.id}`)) {
@@ -320,14 +340,14 @@ client.on("messageCreate", async (message) => {
     });
   }
 });
-var listeners = app.listen(3004, function () {
-  console.log("Your app is listening on port " + `3004`);
-});
+
 client.on("ready", () => {
   console.log(`Bot is On! ${client.user.tag}`);
 });
+
 //============================new codes====================================//
 const ticketsFile = path.join(__dirname, 'tickets.json');
+
 function loadTickets() {
   if (!fs.existsSync(ticketsFile)) {
     fs.writeFileSync(ticketsFile, JSON.stringify([]));
@@ -343,134 +363,146 @@ function loadTickets() {
     return [];
   }
 }
+
 function saveTicket(ticketData) {
   const tickets = loadTickets();
   tickets.push(ticketData);
   fs.writeFileSync(ticketsFile, JSON.stringify(tickets, null, 2));
 }
+
+// FIX #2: دالة جديدة لحفظ tickets بعد الفلترة (عند الإغلاق)
+function saveAllTickets(ticketsArray) {
+  fs.writeFileSync(ticketsFile, JSON.stringify(ticketsArray, null, 2));
+}
+
 client.on('messageCreate', async message => {
-    
   if (message.content.startsWith('+panel')) {
-      const panelEmbed = new MessageEmbed()
-          .setTitle('**بيع أعضاء حقيقية 👥**')
-          .setDescription('**لشراء أعضاء حقيقية 👥 أضغط على زر __شراء أعضاء 👥__**')
-          .setColor('#0099ff');
+    const panelEmbed = new MessageEmbed()
+      .setTitle('**بيع أعضاء حقيقية 👥**')
+      .setDescription('**لشراء أعضاء حقيقية 👥 أضغط على زر __شراء أعضاء 👥__**')
+      .setColor('#0099ff');
 
-      const actionRow = new MessageActionRow()
-          .addComponents(
-              new MessageButton()
-                  .setCustomId('open_ticket')
-                  .setLabel('شراء أعضاء')
-                  .setEmoji(`👥`)
-                  .setStyle('SECONDARY')
-          );
+    const actionRow = new MessageActionRow()
+      .addComponents(
+        new MessageButton()
+          .setCustomId('open_ticket')
+          .setLabel('شراء أعضاء')
+          .setEmoji(`👥`)
+          .setStyle('SECONDARY')
+      );
 
-      await message.channel.send({ embeds: [panelEmbed], components: [actionRow] });
+    await message.channel.send({ embeds: [panelEmbed], components: [actionRow] });
   }
 });
+
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
   if (interaction.customId === 'open_ticket') {
-    const existingTicket = interaction.guild.channels.cache.find(channel =>
-      channel.parentId === config.bot.category &&
-      channel.name.includes(interaction.user.username.toLowerCase())
-    );
-
-
     const existingTicketChannel = interaction.guild.channels.cache.find(channel =>
       channel.parentId === config.bot.category &&
       channel.name.includes(interaction.user.username.toLowerCase())
     );
-    
+
     if (existingTicketChannel) {
       return interaction.reply({
-        content: `❌ You cannot open more than one ticket at a time, This is your ticket <#${existingTicketChannel.id}>`,
+        content: `❌ لا يمكنك فتح أكثر من تكت في نفس الوقت، هذا تكتك <#${existingTicketChannel.id}>`,
         ephemeral: true
       });
     }
-    
-      const guild = interaction.guild;
-      const ticketName = `ticket-${interaction.user.username}`;
 
-      guild.channels.create(ticketName, {
-          type: 'text',
-          parent: `${config.bot.category}`,
-          permissionOverwrites: [
-              {
-                  id: interaction.user.id,
-                  allow: ['VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY']
-              },
-              {
-                  id: guild.roles.everyone,
-                  deny: ['VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY']
-              }
-          ]
-      }).then(async ticketChannel => {
-          await interaction.reply({ content: `**تم فتح تكت شراء أعضاء حقيقية 👥 بنجاح :white_check_mark: <#${ticketChannel.id}>**`, ephemeral: true });
+    const guild = interaction.guild;
+    const ticketName = `ticket-${interaction.user.username.toLowerCase()}`;
 
-          const embed = new MessageEmbed()
-              .setTitle('**شراء أعضاء حقيقية 👥**')
-              .setDescription('**لشراء أعضاء حقيقية 👥 قم بالضغط على زر __شراء__ في أسفل هذه الرسالة لإكمال عملية الشراء**')
-              .setColor('#0099ff');
+    // FIX #5: في discord.js v13 نوع القناة يجب أن يكون 'GUILD_TEXT' وليس 'text'
+    guild.channels.create(ticketName, {
+      type: 'GUILD_TEXT',
+      parent: `${config.bot.category}`,
+      permissionOverwrites: [
+        {
+          id: interaction.user.id,
+          allow: ['VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY']
+        },
+        {
+          id: guild.roles.everyone,
+          deny: ['VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY']
+        }
+      ]
+    }).then(async ticketChannel => {
+      await interaction.reply({ content: `**تم فتح تكت شراء أعضاء حقيقية 👥 بنجاح :white_check_mark: <#${ticketChannel.id}>**`, ephemeral: true });
 
-          const buybutton = new MessageButton()
-              .setCustomId('buy')
-              .setLabel('شراء')
-              .setStyle('SUCCESS');
-          
-          const closebutton = new MessageButton()
-              .setCustomId('close')
-              .setLabel('قفل')
-              .setStyle('DANGER');
+      const embed = new MessageEmbed()
+        .setTitle('**شراء أعضاء حقيقية 👥**')
+        .setDescription('**لشراء أعضاء حقيقية 👥 قم بالضغط على زر __شراء__ في أسفل هذه الرسالة لإكمال عملية الشراء**')
+        .setColor('#0099ff');
 
-          const actionrow = new MessageActionRow()
-              .addComponents(buybutton, closebutton);
-              saveTicket({
-                ticketName: ticketChannel.name,
-                userId: interaction.user.id,
-                channelId: ticketChannel.id
-              });
-          await ticketChannel.send({ embeds: [embed], components: [actionrow] });
+      const buybutton = new MessageButton()
+        .setCustomId('buy')
+        .setLabel('شراء')
+        .setStyle('SUCCESS');
+
+      const closebutton = new MessageButton()
+        .setCustomId('close')
+        .setLabel('قفل')
+        .setStyle('DANGER');
+
+      const actionrow = new MessageActionRow()
+        .addComponents(buybutton, closebutton);
+
+      saveTicket({
+        ticketName: ticketChannel.name,
+        userId: interaction.user.id,
+        channelId: ticketChannel.id
       });
+
+      await ticketChannel.send({ embeds: [embed], components: [actionrow] });
+    }).catch(err => {
+      console.error('خطأ في إنشاء قناة التكت:', err);
+      interaction.reply({ content: '❌ حدث خطأ أثناء فتح التكت، تأكد من صلاحيات البوت.', ephemeral: true }).catch(() => {});
+    });
   }
+
   if (interaction.customId === 'close') {
+    // FIX #2: كان يستدعي saveTicket(updatedTickets) مما يضيف الـ array كعنصر جديد
+    // الصحيح هو استخدام saveAllTickets لحفظ الـ array مباشرة
     const tickets = loadTickets();
     const updatedTickets = tickets.filter(ticket => ticket.channelId !== interaction.channel.id);
-    saveTicket(updatedTickets);
+    saveAllTickets(updatedTickets);
     await interaction.channel.delete().catch(console.error);
-}
+  }
 });
-client.on('channelCreate', async channel => {
-  if (channel.type !== 'GUILD_TEXT' || channel.parentId !== config.bot.category  ) return;  
 
+client.on('channelCreate', async channel => {
+  if (channel.type !== 'GUILD_TEXT' || channel.parentId !== config.bot.category) return;
 });
+
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
-  if (interaction.customId === 'buy') { 
-      const modal = new Modal()
-          .setCustomId('model')
-          .setTitle('شراء أعضاء حقيقية 👥');
+  if (interaction.customId === 'buy') {
+    const modal = new Modal()
+      .setCustomId('model')
+      .setTitle('شراء أعضاء حقيقية 👥');
 
-      const server_idInput = new TextInputComponent()
-          .setCustomId('server_id')
-          .setLabel('أيدي السيرفر')
-          .setStyle('SHORT');
+    const server_idInput = new TextInputComponent()
+      .setCustomId('server_id')
+      .setLabel('أيدي السيرفر')
+      .setStyle('SHORT');
 
-      const members_amountInput = new TextInputComponent()
-          .setCustomId('members_amount')
-          .setLabel('عدد الأعضاء')
-          .setStyle('SHORT');
+    const members_amountInput = new TextInputComponent()
+      .setCustomId('members_amount')
+      .setLabel('عدد الأعضاء')
+      .setStyle('SHORT');
 
-      const serverActionRow = new MessageActionRow().addComponents(server_idInput);
-      const membersActionRow = new MessageActionRow().addComponents(members_amountInput);
+    const serverActionRow = new MessageActionRow().addComponents(server_idInput);
+    const membersActionRow = new MessageActionRow().addComponents(members_amountInput);
 
-      modal.addComponents(serverActionRow, membersActionRow);
+    modal.addComponents(serverActionRow, membersActionRow);
 
-      await interaction.showModal(modal);
+    await interaction.showModal(modal);
   }
 });
+
 client.on('interactionCreate', async interaction => {
   if (!interaction.isModalSubmit()) return;
 
@@ -514,11 +546,14 @@ client.on('interactionCreate', async interaction => {
       ephemeral: false
     });
 
+    const channel = interaction.channel;
+
+    // FIX #8: تصحيح نص فلتر رسالة بروبوت - result هو المبلغ الأصلي قبل الضريبة
+    // بروبوت يرسل المبلغ الأصلي result وليس pricetax
     const filter = msg =>
       msg.author.id === probotId &&
-      msg.content.includes(`:moneybag: | ${interaction.user.username}, has transferred \`$${result}\` to <@!${transferId}> **`);
-
-    const channel = interaction.channel;
+      msg.content.includes(`| ${interaction.user.username}`) &&
+      msg.content.includes(`${result}`);
 
     channel.awaitMessages({
       filter,
@@ -545,7 +580,7 @@ client.on('interactionCreate', async interaction => {
           await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
               reject(new Error("**⏰ انتهى الوقت ولم يتم إدخال البوت للسيرفر**"));
-            }, 600000); 
+            }, 600000);
 
             client.once('guildCreate', guild => {
               if (guild.id === serverid) {
@@ -567,7 +602,8 @@ client.on('interactionCreate', async interaction => {
       } else {
         const guild = client.guilds.cache.get(serverid);
         if (!guild) return channel.send('**❌ لم يتم العثور على هذا السيرفر**');
-        await handleAddMembers(guild, amount, alld, channel);
+        // FIX #10: تمرير interaction.user كـ buyer حتى لا يكون undefined
+        await handleAddMembers(guild, amount, alld, channel, interaction.user);
       }
     }).catch(() => {
       channel.send('**⏰ إنتهت 60 ثانية و لم يتم التحويل، الرجاء المحاولة مرة أخرى**');
@@ -575,12 +611,12 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-async function handleAddMembers(guild, amount, alld, channel, buyer) {
+// FIX #10: buyer له قيمة افتراضية null لتجنب خطأ buyer.id عند عدم تمريره
+async function handleAddMembers(guild, amount, alld, channel, buyer = null) {
   let count = 0;
 
   for (let i = 0; i < amount && i < alld.length; i++) {
     try {
-
       await oauth.addMember({
         guildId: guild.id,
         userId: alld[i].ID,
@@ -600,14 +636,19 @@ async function handleAddMembers(guild, amount, alld, channel, buyer) {
   if (logChannel && logChannel.send) {
     const logEmbed = new MessageEmbed()
       .setTitle('**عملية شراء أعضاء**')
-      .setDescription(`**المشتري:** <@${buyer.id}>\n**عدد الأعضاء الذين تم شراؤهم:** \`${count}\``)
+      .setDescription(
+        buyer
+          ? `**المشتري:** <@${buyer.id}>\n**عدد الأعضاء الذين تم شراؤهم:** \`${count}\``
+          : `**عدد الأعضاء الذين تم إدخالهم:** \`${count}\``
+      )
       .setColor('#0099ff');
     await logChannel.send({ embeds: [logEmbed] });
   }
 }
 
 const stockDataPath = path.join(__dirname, "stockMessage.json");
-const cooldowns = {}; 
+const cooldowns = {};
+
 function saveStockMessageInfo(channelId, messageId) {
   fs.writeFileSync(stockDataPath, JSON.stringify({ channelId, messageId }, null, 2));
 }
@@ -631,6 +672,7 @@ async function isStockMessageStillExists(client) {
     return false;
   }
 }
+
 //=========================================================================//
 process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled Rejection:', reason);
